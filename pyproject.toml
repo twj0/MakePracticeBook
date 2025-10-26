@@ -1,0 +1,28 @@
+[project]
+name = "makepracticebook"
+version = "0.0.1"
+description = "考研 做题本 生成"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "typer[all]",
+    "rich",
+    "pymupdf",
+    "pytesseract",
+    "opencv-python",
+    "numpy",
+    "pillow",
+    "docx2pdf",
+    "pyinstaller>=6.16.0",
+]
+
+[project.scripts]
+mpb = "make_practice_book.cli:app"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["make_practice_book", "make_practice_book.*"]

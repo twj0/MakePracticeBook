@@ -111,3 +111,126 @@
 > 写一个BAT脚本，它会把传入的所有 jpg 图片用 ImageMagick 的将 DPI 修改为 300，输出的时候，直接替代原文件即可。
 >
 > 写一个BAT脚本，它会把传入的所有 jpg 图片用 ImageMagick 合并为一个 pdf 文件，输出到当前位置。
+
+---
+
+# 二次开发 内容
+
+# MakePracticeBook - 考研做题本生成器
+
+这个项目可以帮助你将扫描版试卷切片，加上统一的背景，然后合并为一个完整的PDF文件，方便在平板上做题。
+
+## 项目功能
+
+- 将试卷切片加上统一背景
+- 将处理后的切片合并为PDF
+- 支持A4和A5纸张尺寸
+- 可以设置DPI和背景偏移量
+- 支持一键处理完整流程
+
+## 环境要求
+
+- Python 3.13+
+- ImageMagick
+- Tesseract OCR (可选，用于Phase 2功能)
+- Microsoft Word 或 LibreOffice (用于doc/docx转换)
+
+## 安装和使用
+
+### 使用uv管理项目（推荐）
+
+本项目支持使用[uv](https://docs.astral.sh/uv/)工具来管理Python环境和依赖。uv是一个极快的Python包和项目管理器，可以替代传统的pip和venv。
+
+1. 安装uv:
+   ```bash
+   # Windows (使用pip)
+   pip install uv
+   
+   # macOS/Linux (使用pip)
+   pip install uv
+   
+   # 或者参考uv官方文档的其他安装方式
+   ```
+
+2. 克隆项目并设置环境:
+   ```bash
+   # 克隆项目
+   git clone <repository-url>
+   cd MakePracticeBook
+   
+   # 创建虚拟环境并安装依赖
+   uv venv
+   
+   # 使用清华镜像源安装依赖（可选）
+   uv pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
+   
+   # 或使用默认源安装依赖
+   uv pip install -e .
+   ```
+
+3. 运行命令:
+   ```bash
+   # 查看帮助
+   uv run mpb --help
+   
+   # 生成背景图
+   uv run mpb generate-background --size A4 --dpi 300 --output background.png
+   
+   # 处理切片并生成做题本
+   uv run mpb process "your_slices_directory" --size A4 --dpi 300 --output-pdf "做题本.pdf"
+   
+   # 使用Phase 2功能（文档转换、OCR分割等）
+   uv run mpb convert-document "input.docx" --output-pdf "output.pdf"
+   uv run mpb ocr-segment "input.pdf" --out-dir "segments"
+   uv run mpb auto-process "input.docx" --size A4 --dpi 300 --output-pdf "做题本.pdf"
+   ```
+
+### 传统方式安装
+
+1. 克隆项目:
+   ```bash
+   git clone <repository-url>
+   cd MakePracticeBook
+   ```
+
+2. 创建虚拟环境并激活:
+   ```bash
+   python -m venv venv
+   # Windows
+   venv\Scripts\activate
+   # macOS/Linux
+   source venv/bin/activate
+   ```
+
+3. 安装依赖:
+   ```bash
+   pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple  # 使用清华源（可选）
+   pip install -e .
+   ```
+
+4. 运行命令:
+   ```bash
+   mpb --help
+   ```
+
+## 构建可执行文件
+
+使用PyInstaller构建可执行文件:
+
+```bash
+# 使用uv运行构建脚本
+uv run scripts/build_exe.bat
+
+# 或直接运行构建脚本
+scripts/build_exe.bat
+```
+
+构建后的可执行文件位于 `dist/make-practice-book/` 目录中。
+
+## 使用可执行文件
+
+构建完成后，你可以将PDF切片文件夹拖拽到 `make-practice-book.exe` 上，程序会自动生成名为 `做题本.pdf` 的文件。
+
+## ChatGPT 对话大致记录
+
+这个项目所用到的脚本，都是在 ChatGPT 的帮助下，写出来的。这是一些对话的记录：

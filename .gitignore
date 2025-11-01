@@ -13,7 +13,7 @@ images*
 prompt/
 .env
 docs/
-
+out/
 
 # Python
 __pycache__/

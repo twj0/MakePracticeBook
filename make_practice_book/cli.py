@@ -1,259 +1,321 @@
-from typing import Optional
-import os
-import sys
+"""
+Exercise Book Generator CLI Interface
+"""
 
 import typer
+from pathlib import Path
+from typing import Optional
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+from rich.panel import Panel
+import os
+import subprocess
+import shutil
+from dotenv import load_dotenv, find_dotenv
 
+from .file_converter import FileConverter
+from .ai_processor import AIProcessor, GroqProcessor, ZhipuAIProcessor
 from .version import __version__
-from . import imaging
-from . import pdf_utils
-from . import doc_converter
-from . import ocr_processor
-from . import question_splitter
 
-app = typer.Typer(add_completion=False, no_args_is_help=True)
+app = typer.Typer(
+    name="mpb",
+    help="Exercise Book Generator - Convert docx/doc/pdf files to handwritten exercise book format",
+    add_completion=False
+)
 console = Console()
 
+# Load environment variables from .env if present (searching upwards)
+load_dotenv(find_dotenv(), override=False)
 
-def version_callback(value: bool):
-    if value:
-        console.print(f"make-practice-book {__version__}")
-        raise typer.Exit()
+
+@app.command()
+def convert(
+    input_file: Path = typer.Argument(..., help="Input file path (.docx, .pdf)", exists=True),
+    output_file: Optional[Path] = typer.Option(None, "--output-file", "-o", help="Output file path"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override (uses GROQ_API_KEY or ZHIPUAI_API_KEY from env if omitted)"),
+    model: str = typer.Option("glm-4", "--model", "-m", help="AI model to use (e.g., glm-4, llama3-70b-8192)"),
+    skip_ai: bool = typer.Option(False, "--skip-ai", help="Skip AI processing, only convert to Markdown"),
+    use_segments: bool = typer.Option(False, "--use-segments", help="Process long content in segments"),
+    tesseract_cmd: Optional[str] = typer.Option(None, "--tesseract-cmd", help="Path to tesseract executable"),
+    provider: Optional[str] = typer.Option("zhipu", "--provider", "-p", help="AI provider: groq, zhipu"),
+    exbook: bool = typer.Option(False, "--exbook", help="Output ExBook LaTeX to out/main.tex instead of Markdown"),
+    compile_pdf: bool = typer.Option(False, "--compile", help="Compile out/main.tex to PDF (requires xelatex/pdflatex)")
+):
+    """
+    Convert document file to exercise book format
+    
+    Examples:
+        mpb convert input.docx
+        mpb convert input.pdf --output-file my_book.md
+        mpb convert input.docx --skip-ai
+        mpb convert input.pdf --provider groq
+    """
+    # Check file format
+    suffix = input_file.suffix.lower()
+    if suffix == '.doc':
+        console.print("[red]Error: .doc (legacy) is not supported. Please convert to .docx first.[/red]")
+        raise typer.Exit(1)
+    supported_formats = ['.docx', '.pdf']
+    if suffix not in supported_formats:
+        console.print(f"[red]Error: Unsupported file format. Supported formats: {', '.join(supported_formats)}[/red]")
+        raise typer.Exit(1)
+    
+    # Set default output file name (Markdown mode)
+    if output_file is None and not exbook:
+        output_file = input_file.with_name(f"{input_file.stem}_exercise_book.md")
+    
+    # Compose an initial status panel (for ExBook we will show target .tex later)
+    panel_lines = [f"[bold cyan]Processing file:[/bold cyan] {input_file}"]
+    if not exbook:
+        panel_lines.append(f"[bold cyan]Output file:[/bold cyan] {output_file}")
+    console.print(Panel.fit(
+        "\n".join(panel_lines),
+        title="Exercise Book Generator",
+        border_style="cyan"
+    ))
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        # Step 1: File conversion
+        task1 = progress.add_task("[cyan]Converting file to Markdown...", total=None)
+        converter = FileConverter(tesseract_cmd=tesseract_cmd)
+        try:
+            markdown_content = converter.convert_to_markdown(str(input_file))
+            markdown_content = FileConverter.clean_text(markdown_content)
+            progress.update(task1, completed=True)
+            console.print("[green]✓[/green] File conversion completed")
+        except Exception as e:
+            progress.stop()
+            console.print(f"[red]✗ File conversion failed: {str(e)}[/red]")
+            raise typer.Exit(1)
+        
+        # If skip AI processing
+        if skip_ai:
+            if exbook:
+                # Write ExBook template with empty snippet
+                base_name = input_file.stem
+                tex_path = _write_exbook_output("", base_name=base_name)
+                console.print(f"[green]✓[/green] ExBook LaTeX generated: {tex_path}")
+                if compile_pdf:
+                    _compile_pdf(console, tex_filename=f"{base_name}.tex")
+                return
+            else:
+                task_save = progress.add_task("[cyan]Saving file...", total=None)
+                try:
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(markdown_content)
+                    progress.update(task_save, completed=True)
+                    console.print("[green]✓[/green] File saved successfully")
+                    console.print(f"[green]Original Markdown file generated:[/green] {output_file}")
+                    return
+                except Exception as e:
+                    progress.stop()
+                    console.print(f"[red]✗ File save failed: {str(e)}[/red]")
+                    raise typer.Exit(1)
+        
+        # Step 2: AI processing
+        task2 = progress.add_task("[cyan]AI processing...", total=None)
+        
+        try:
+            # Select AI processor based on provider
+            if provider == "groq":
+                processor = GroqProcessor(api_key=api_key)
+            elif provider == "zhipu":
+                processor = ZhipuAIProcessor(api_key=api_key)
+            else:
+                console.print("[red]Error: Unknown provider. Use 'groq' or 'zhipu'.[/red]")
+                raise typer.Exit(1)
+            
+            if exbook:
+                exercise_book_content = processor.process_to_exbook_latex(markdown_content)
+            else:
+                if use_segments:
+                    exercise_book_content = processor.process_with_segments(markdown_content)
+                else:
+                    exercise_book_content = processor.process_exercise_book(markdown_content)
+            
+            progress.update(task2, completed=True)
+            console.print("[green]✓[/green] AI processing completed")
+        except Exception as e:
+            progress.stop()
+            console.print(f"[red]✗ AI processing failed: {str(e)}[/red]")
+            console.print("[yellow]Tip: You can use --skip-ai to generate Markdown without AI processing[/yellow]")
+            raise typer.Exit(1)
+        
+        # Step 3: Save file
+        if exbook:
+            # Write ExBook LaTeX to out/{input_stem}.tex
+            try:
+                base_name = input_file.stem
+                tex_path = _write_exbook_output(exercise_book_content, base_name=base_name)
+                console.print(f"[green]✓[/green] ExBook LaTeX generated: {tex_path}")
+                if compile_pdf:
+                    _compile_pdf(console, tex_filename=f"{base_name}.tex")
+            except Exception as e:
+                progress.stop()
+                console.print(f"[red]✗ ExBook save failed: {str(e)}[/red]")
+                raise typer.Exit(1)
+        else:
+            task3 = progress.add_task("[cyan]Saving file...", total=None)
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(exercise_book_content)
+                progress.update(task3, completed=True)
+                console.print("[green]✓[/green] File saved successfully")
+            except Exception as e:
+                progress.stop()
+                console.print(f"[red]✗ File save failed: {str(e)}[/red]")
+                raise typer.Exit(1)
+    
+    console.print(Panel.fit(
+        f"[bold green]Exercise book generated successfully![/bold green]\n"
+        f"[cyan]Output:[/cyan] {output_file}",
+        border_style="green"
+    ))
+
+
+@app.command()
+def info():
+    """
+    Display project information
+    """
+    table = Table(title="Exercise Book Generator Information", show_header=True, header_style="bold cyan")
+    table.add_column("Item", style="cyan", width=20)
+    table.add_column("Details", style="magenta")
+    
+    table.add_row("Version", __version__)
+    table.add_row("Supported Input", "docx, pdf")
+    table.add_row("Output Format", "Markdown or ExBook LaTeX (--exbook)")
+    table.add_row("AI Support", "Groq/ZhipuAI and compatible OpenAI APIs")
+    table.add_row("OCR Support", "Yes (for scanned PDFs)")
+    
+    console.print(table)
+    
+    console.print("\n[bold cyan]Environment Variables:[/bold cyan]")
+    env_table = Table(show_header=True, header_style="bold yellow")
+    env_table.add_column("Variable", style="yellow")
+    env_table.add_column("Description", style="white")
+    env_table.add_column("Status", style="green")
+    
+    env_vars = [
+        ("GROQ_API_KEY", "Groq API key", os.getenv("GROQ_API_KEY")),
+        ("ZHIPUAI_API_KEY", "Zhipu AI API key", os.getenv("ZHIPUAI_API_KEY")),
+    ]
+    
+    for var_name, description, value in env_vars:
+        status = "✓ Set" if value else "✗ Not set"
+        style = "green" if value else "red"
+        env_table.add_row(var_name, description, f"[{style}]{status}[/{style}]")
+    
+    console.print(env_table)
+
+
+def _build_exbook_document(snippet: str) -> str:
+    lines = [
+        r"\newcommand{\EXBOOKDIR}{ExBook}",
+        r"\IfFileExists{../ExBook/ExBook.cls}{\renewcommand{\EXBOOKDIR}{../ExBook}}{}",
+        r"\IfFileExists{ExBook/ExBook.cls}{\renewcommand{\EXBOOKDIR}{ExBook}}{}",
+        r"\documentclass[standard]{\EXBOOKDIR/ExBook}",
+        r"\usepackage{graphicx}",
+        r"\graphicspath{{\EXBOOKDIR/}{\EXBOOKDIR/img/}}",
+        r"\begin{document}",
+        r"\input{\EXBOOKDIR/config.tex}",
+        r"\maketitle",
+        r"\input{\EXBOOKDIR/contents/pre.tex}",
+        r"\input{\EXBOOKDIR/contents/print.tex}",
+        r"\setcounter{page}{1}",
+        r"\tableofcontents",
+        "",
+        r"% AI 生成内容开始",
+    ]
+    if snippet and snippet.strip():
+        lines.append(snippet.strip())
+    else:
+        lines.append(r"% (空) 跳过 AI 处理，未插入内容")
+    lines += [
+        "",
+        r"% AI 生成内容结束",
+        "",
+        r"\end{document}",
+    ]
+    return "\n".join(lines)
+
+
+def _write_exbook_output(snippet: str, base_name: str = "main") -> str:
+    out_dir = Path.cwd() / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_tex = out_dir / f"{base_name}.tex"
+    content = _build_exbook_document(snippet)
+    with open(out_tex, "w", encoding="utf-8") as f:
+        f.write(content)
+    return str(out_tex)
+
+
+def _compile_pdf(console: Console, tex_filename: str = "main.tex"):
+    out_dir = Path.cwd() / "out"
+    out_tex = out_dir / tex_filename
+    if not out_tex.exists():
+        console.print(f"[red]{out_tex} not found. Generate LaTeX first.[/red]")
+        raise typer.Exit(1)
+    engine = shutil.which("latexmk") or shutil.which("xelatex") or shutil.which("pdflatex")
+    if not engine:
+        console.print("[red]latexmk/xelatex/pdflatex not found in PATH.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[cyan]Compiling with {engine}...[/cyan]")
+    if engine.lower().endswith("latexmk.exe") or os.path.basename(engine).lower() == "latexmk":
+        proc = subprocess.run(
+            [engine, "-xelatex", "-pdf", tex_filename],
+            cwd=str(out_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+        )
+        console.print(proc.stdout)
+        if proc.returncode != 0:
+            console.print("[red]latexmk compile failed.[/red]")
+            raise typer.Exit(1)
+    else:
+        for i in range(2):
+            proc = subprocess.run(
+                [engine, "-interaction=nonstopmode", "-halt-on-error", tex_filename],
+                cwd=str(out_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+            )
+            console.print(proc.stdout)
+            if proc.returncode != 0:
+                console.print(f"[red]LaTeX compile failed on pass {i+1}.[/red]")
+                raise typer.Exit(1)
+    # Determine expected PDF name from tex filename
+    pdf_basename = Path(tex_filename).with_suffix("")
+    pdf_path = out_dir / f"{pdf_basename}.pdf"
+    if pdf_path.exists():
+        console.print(f"[green]✓ PDF generated:[/green] {pdf_path}")
+    else:
+        console.print(f"[yellow]Compile finished, but {pdf_path.name} not found.[/yellow]")
+
+
+@app.command()
+def version():
+    """
+    Display version information
+    """
+    console.print(f"[bold cyan]Exercise Book Generator[/bold cyan] version [bold green]{__version__}[/bold green]")
 
 
 @app.callback()
-def main(
-    version: Optional[bool] = typer.Option(None, "--version", callback=version_callback, is_eager=True, help="Show version and exit"),
-):
-    """Make Practice Book CLI"""
-
-
-@app.command()
-def generate_background(
-    size: str = typer.Option("A4", help="Paper size preset: A4 or A5"),
-    dpi: int = typer.Option(300, help="Background DPI"),
-    output: str = typer.Option("background.png", help="Output background file"),
-    color: str = typer.Option("#FFFFFF", help="Background color"),
-):
-    """Generate a blank background image using ImageMagick."""
-    size = size.upper()
-    if size == "A4":
-        w_mm, h_mm = 210, 297
-    elif size == "A5":
-        w_mm, h_mm = 148, 210
-    else:
-        raise typer.BadParameter("Unsupported size. Use A4 or A5.")
-    imaging.generate_background(w_mm, h_mm, dpi, output=output, color=color)
-
-
-@app.command()
-def add_background(
-    input_path: str = typer.Argument(..., help="File or directory of images"),
-    background: str = typer.Option("background.png", help="Background image file"),
-    offset_x: int = typer.Option(0, help="Horizontal offset in pixels"),
-    offset_y: int = typer.Option(100, help="Vertical offset in pixels"),
-    gravity: str = typer.Option("north", help="Composite gravity"),
-    in_place: bool = typer.Option(True, help="Modify images in place"),
-    output_dir: Optional[str] = typer.Option(None, help="Output directory when not in-place"),
-):
-    """Composite each input image onto a background image."""
-    imaging.add_background(
-        input_path=input_path,
-        background=background,
-        offset_x=offset_x,
-        offset_y=offset_y,
-        gravity=gravity,
-        in_place=in_place,
-        output_dir=output_dir,
-    )
-
-
-@app.command()
-def pairwise_concat(
-    input_path: str = typer.Argument(..., help="File or directory of images"),
-    extend_last: bool = typer.Option(True, help="Extend bottom of last single image"),
-):
-    """Append images vertically in pairs, deleting the second of each pair."""
-    imaging.pairwise_concat(input_path=input_path, extend_last=extend_last)
-
-
-@app.command()
-def set_dpi(
-    input_path: str = typer.Argument(..., help="File or directory of JPG images"),
-    dpi: int = typer.Option(300, help="Target DPI"),
-):
-    """Set image DPI using mogrify for directories."""
-    imaging.set_dpi(input_path=input_path, dpi=dpi)
-
-
-@app.command("jpgs-to-pdf")
-def jpgs_to_pdf(
-    input_dir: str = typer.Argument(..., help="Directory containing JPG images"),
-    output_pdf: str = typer.Option("做题本.pdf", help="Output PDF file name"),
-    quality: int = typer.Option(80, help="JPEG compression quality (0-100)"),
-):
-    """Convert JPG images to a single PDF."""
-    imaging.jpgs_to_pdf(input_dir=input_dir, output_pdf=output_pdf, quality=quality)
-
-
-@app.command("pdf-rescale")
-def pdf_rescale(
-    input_pdf: str = typer.Argument(..., help="Input PDF path"),
-    width_cm: float = typer.Option(..., help="New PDF page width in cm"),
-    output_pdf: Optional[str] = typer.Option(None, help="Output PDF path; default appends width suffix"),
-):
-    """Rescale PDF physical width to a given size in cm (keeps aspect)."""
-    pdf_utils.rescale_pdf_width_cm(input_pdf=input_pdf, new_width_cm=width_cm, output_pdf=output_pdf)
-
-
-@app.command()
-def process(
-    input_path: str = typer.Argument(".", help="Directory of prepared JPG slices"),
-    size: str = typer.Option("A4", help="Background paper size preset: A4 or A5"),
-    dpi: int = typer.Option(300, help="DPI for background and final PDF"),
-    output_pdf: str = typer.Option("做题本.pdf", help="Output PDF file"),
-    bg_file: str = typer.Option("background.png", help="Background file to use or create"),
-    offset_y: int = typer.Option(100, help="Vertical offset for pasted images"),
-    set_dpi_first: bool = typer.Option(True, help="Set JPG DPI before composing"),
-):
-    """One-stop pipeline: ensure background, optionally set DPI, composite, then export PDF.
-
-    Note: This Phase 1 pipeline expects already-sliced images. OCR-based auto-splitting arrives in Phase 2.
+def main():
     """
-    # Ensure background exists
-    if not os.path.isfile(bg_file):
-        console.print(f"[yellow]{bg_file} not found. Generating...[/yellow]")
-        size_up = size.upper()
-        if size_up == "A4":
-            w_mm, h_mm = 210, 297
-        elif size_up == "A5":
-            w_mm, h_mm = 148, 210
-        else:
-            raise typer.BadParameter("Unsupported size. Use A4 or A5.")
-        imaging.generate_background(w_mm, h_mm, dpi, output=bg_file)
-
-    # Optionally set DPI for JPGs
-    if set_dpi_first:
-        imaging.set_dpi(input_path=input_path, dpi=dpi)
-
-    # Composite onto background
-    imaging.add_background(
-        input_path=input_path,
-        background=bg_file,
-        offset_x=0,
-        offset_y=offset_y,
-        gravity="north",
-        in_place=True,
-        output_dir=None,
-    )
-
-    # Export to PDF
-    imaging.jpgs_to_pdf(input_dir=input_path, output_pdf=output_pdf, quality=80)
-
-
-@app.command("convert-document")
-def convert_document(
-    input_path: str = typer.Argument(..., help="Input DOC/DOCX/PDF path"),
-    output_pdf: Optional[str] = typer.Option(None, help="Output PDF file path"),
-):
-    """Convert DOC/DOCX/PDF into a normalized PDF using Word/docx2pdf if available, else LibreOffice."""
-    try:
-        pdf_path = doc_converter.convert_to_pdf(input_path, output_pdf)
-        console.print(f"[green]Converted:[/green] {pdf_path}")
-    except Exception as e:
-        console.print(f"[red]Conversion failed:[/red] {e}")
-        raise typer.Exit(code=1)
-
-
-@app.command("ocr-segment")
-def ocr_segment(
-    input_pdf: str = typer.Argument(..., help="Input PDF path"),
-    out_dir: str = typer.Option("segments", help="Output directory for question images"),
-    engine: str = typer.Option("tesseract", help="OCR engine: tesseract or paddle"),
-    lang: str = typer.Option("chi_sim", help="OCR language (Tesseract)"),
-    dpi: int = typer.Option(300, help="Rendering DPI"),
-    page_from: Optional[int] = typer.Option(None, help="Start page (1-based)"),
-    page_to: Optional[int] = typer.Option(None, help="End page (1-based, inclusive)"),
-):
-    """OCR a PDF and split into per-question images using whitespace and numbering heuristics."""
-    try:
-        eng = ocr_processor.OcrEngine(engine=engine, lang=lang)
-        paths = question_splitter.segment_pdf_to_questions(
-            pdf_path=input_pdf,
-            engine=eng,
-            out_dir=out_dir,
-            dpi=dpi,
-            page_from=page_from,
-            page_to=page_to,
-        )
-        console.print(f"[green]Saved {len(paths)} segments -> {out_dir}[/green]")
-    except Exception as e:
-        console.print(f"[red]OCR segmentation failed:[/red] {e}")
-        raise typer.Exit(code=1)
-
-
-@app.command("auto-process")
-def auto_process(
-    input_path: str = typer.Argument(..., help="Input DOC/DOCX/PDF path"),
-    size: str = typer.Option("A4", help="Background paper size preset: A4 or A5"),
-    dpi: int = typer.Option(300, help="DPI for rendering and background"),
-    engine: str = typer.Option("tesseract", help="OCR engine: tesseract or paddle"),
-    lang: str = typer.Option("chi_sim", help="OCR language (Tesseract)"),
-    offset_y: int = typer.Option(100, help="Vertical offset when compositing"),
-    output_pdf: str = typer.Option("做题本.pdf", help="Final practice book PDF"),
-    segments_dir: Optional[str] = typer.Option(None, help="Where to store per-question images (default alongside input)"),
-    page_from: Optional[int] = typer.Option(None, help="Start page (1-based)"),
-    page_to: Optional[int] = typer.Option(None, help="End page (1-based, inclusive)"),
-):
-    """End-to-end: convert document to PDF, OCR segment to question images, compose to practice book PDF."""
-    try:
-        # 1) Convert to PDF
-        pdf_path = doc_converter.convert_to_pdf(input_path)
-
-        # 2) Segment to question images
-        base_dir = os.path.dirname(os.path.abspath(pdf_path))
-        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-        out_dir = segments_dir or os.path.join(base_dir, base_name + "_segments")
-        eng = ocr_processor.OcrEngine(engine=engine, lang=lang)
-        _ = question_splitter.segment_pdf_to_questions(
-            pdf_path=pdf_path,
-            engine=eng,
-            out_dir=out_dir,
-            dpi=dpi,
-            page_from=page_from,
-            page_to=page_to,
-        )
-
-        # 3) Ensure background
-        size_up = size.upper()
-        if size_up == "A4":
-            w_mm, h_mm = 210, 297
-        elif size_up == "A5":
-            w_mm, h_mm = 148, 210
-        else:
-            raise typer.BadParameter("Unsupported size. Use A4 or A5.")
-        bg_file = os.path.join(base_dir, "background.png")
-        if not os.path.isfile(bg_file):
-            imaging.generate_background(w_mm, h_mm, dpi, output=bg_file)
-
-        # 4) Set DPI, composite, and export
-        imaging.set_dpi(input_path=out_dir, dpi=dpi)
-        imaging.add_background(
-            input_path=out_dir,
-            background=bg_file,
-            offset_x=0,
-            offset_y=offset_y,
-            gravity="north",
-            in_place=True,
-            output_dir=None,
-        )
-        final_pdf = os.path.join(base_dir, output_pdf)
-        imaging.jpgs_to_pdf(input_dir=out_dir, output_pdf=final_pdf, quality=80)
-        console.print(f"[green]Done -> {final_pdf}[/green]")
-    except Exception as e:
-        console.print(f"[red]Auto process failed:[/red] {e}")
-        raise typer.Exit(code=1)
+    Exercise Book Generator - Convert docx/doc/pdf files to handwritten exercise book format
+    """
+    pass
 
 
 if __name__ == "__main__":

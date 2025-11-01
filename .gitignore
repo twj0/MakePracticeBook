@@ -5,12 +5,21 @@
 *.mp4
 .history
 images*
+.trae
+.windsurf
+.augment
+.roo
+.vscode
+prompt/
+.env
+docs/
+
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-
+.venv
 # Django stuff:
 *.log
 local_settings.py
@@ -41,3 +50,5 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
+
+# Exbook

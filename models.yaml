@@ -1,0 +1,25 @@
+zhipu:
+  recommended:
+    - name: "glm-4-flash-250414"
+      alias: "GLM-4 Flash 250414"
+      description: "官方示例中使用的版本"
+  all:
+    - glm-4-flash-250414
+
+groq:
+  recommended:
+    - name: "llama-3.1-8b-instant"
+      alias: "Llama 3.1 8B (Fast)"
+      description: "高速模型，适合快速处理"
+    - name: "llama-3.1-70b-versatile"
+      alias: "Llama 3.1 70B (Quality)"
+      description: "高质量模型，适合复杂内容"
+  all:
+    - llama-3.1-8b-instant
+    - llama-3.1-70b-versatile
+    - meta-llama/llama-guard-4-12b
+    - meta-llama/llama-prompt-guard-2-22m
+    - meta-llama/llama-prompt-guard-2-86m
+    - openai/gpt-oss-120b
+    - openai/gpt-oss-20b
+    - qwen/qwen3-32b

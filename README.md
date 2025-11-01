@@ -116,121 +116,263 @@
 
 # 二次开发 内容
 
-# MakePracticeBook - 考研做题本生成器
+# MakePracticeBook - 做题本生成器
 
-这个项目可以帮助你将扫描版试卷切片，加上统一的背景，然后合并为一个完整的PDF文件，方便在平板上做题。
+## 项目简介
 
-## 项目功能
+MakePracticeBook 是一个现代化的做题本生成工具，可以自动将 docx、doc 和 pdf 文件转换为适合手写练习的做题本格式。
 
-- 将试卷切片加上统一背景
-- 将处理后的切片合并为PDF
-- 支持A4和A5纸张尺寸
-- 可以设置DPI和背景偏移量
-- 支持一键处理完整流程
+### 核心功能
 
-## 环境要求
+- ✨ **多格式支持**：支持 DOCX、DOC、PDF 文件
+- 🔍 **智能 OCR**：自动识别扫描版 PDF 中的文本  
+- 🤖 **AI 增强**：使用 AI 将内容重新组织为适合做题的格式
+- 💻 **友好的 CLI**：提供清晰的命令行界面和进度显示
+- 🔧 **灵活配置**：支持多种 AI 模型和 API 端点（OpenAI、Groq、ZhipuAI）
 
-- Python 3.13+
-- ImageMagick
-- Tesseract OCR (可选，用于Phase 2功能)
-- Microsoft Word 或 LibreOffice (用于doc/docx转换)
+## 安装
 
-## 安装和使用
+### 依赖要求
 
-### 使用uv管理项目（推荐）
+- Python >= 3.13
+- Tesseract OCR（用于 OCR 功能）
 
-本项目支持使用[uv](https://docs.astral.sh/uv/)工具来管理Python环境和依赖。uv是一个极快的Python包和项目管理器，可以替代传统的pip和venv。
+### 安装步骤
 
-1. 安装uv:
-   ```bash
-   # Windows (使用pip)
-   pip install uv
-   
-   # macOS/Linux (使用pip)
-   pip install uv
-   
-   # 或者参考uv官方文档的其他安装方式
-   ```
-
-2. 克隆项目并设置环境:
-   ```bash
-   # 克隆项目
-   git clone <repository-url>
-   cd MakePracticeBook
-   
-   # 创建虚拟环境并安装依赖
-   uv venv
-   
-   # 使用清华镜像源安装依赖（可选）
-   uv pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
-   
-   # 或使用默认源安装依赖
-   uv pip install -e .
-   ```
-
-3. 运行命令:
-   ```bash
-   # 查看帮助
-   uv run mpb --help
-   
-   # 生成背景图
-   uv run mpb generate-background --size A4 --dpi 300 --output background.png
-   
-   # 处理切片并生成做题本
-   uv run mpb process "your_slices_directory" --size A4 --dpi 300 --output-pdf "做题本.pdf"
-   
-   # 使用Phase 2功能（文档转换、OCR分割等）
-   uv run mpb convert-document "input.docx" --output-pdf "output.pdf"
-   uv run mpb ocr-segment "input.pdf" --out-dir "segments"
-   uv run mpb auto-process "input.docx" --size A4 --dpi 300 --output-pdf "做题本.pdf"
-   ```
-
-### 传统方式安装
-
-1. 克隆项目:
-   ```bash
-   git clone <repository-url>
-   cd MakePracticeBook
-   ```
-
-2. 创建虚拟环境并激活:
-   ```bash
-   python -m venv venv
-   # Windows
-   venv\Scripts\activate
-   # macOS/Linux
-   source venv/bin/activate
-   ```
-
-3. 安装依赖:
-   ```bash
-   pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple  # 使用清华源（可选）
-   pip install -e .
-   ```
-
-4. 运行命令:
-   ```bash
-   mpb --help
-   ```
-
-## 构建可执行文件
-
-使用PyInstaller构建可执行文件:
-
+1. **克隆项目**：
 ```bash
-# 使用uv运行构建脚本
-uv run scripts/build_exe.bat
-
-# 或直接运行构建脚本
-scripts/build_exe.bat
+git clone <repository-url>
+cd MakePracticeBook
 ```
 
-构建后的可执行文件位于 `dist/make-practice-book/` 目录中。
+2. **安装依赖**：
+```bash
+pip install -e .
+```
 
-## 使用可执行文件
+3. **安装 Tesseract OCR**（可选，用于扫描版 PDF）：
+   - Windows: 下载并安装 [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)
+   - 下载中文语言包：chi_sim.traineddata
 
-构建完成后，你可以将PDF切片文件夹拖拽到 `make-practice-book.exe` 上，程序会自动生成名为 `做题本.pdf` 的文件。
+4. **配置环境变量**：
 
-## ChatGPT 对话大致记录
+创建 `.env` 文件或设置环境变量：
 
-这个项目所用到的脚本，都是在 ChatGPT 的帮助下，写出来的。这是一些对话的记录：
+```bash
+# OpenAI API 配置
+API_KEY=your_openai_api_key
+API_BASE=https://api.openai.com/v1
+
+# 或者使用 Groq
+GROQ_API_KEY=your_groq_api_key
+
+# 或者使用智谱 AI
+ZHIPUAI_API_KEY=your_zhipuai_api_key
+```
+
+## 使用方法
+
+### 基本命令
+
+```bash
+# 转换文档文件为做题本格式
+mpb convert input.docx
+
+# 指定输出文件
+mpb convert input.pdf --output-file my_exercise_book.md
+
+# 使用 Groq API
+mpb convert input.docx --provider groq
+
+# 使用智谱 AI
+mpb convert input.pdf --provider zhipu
+
+# 跳过 AI 处理，仅转换为 Markdown
+mpb convert input.docx --skip-ai
+
+# 处理长文档（分段处理）
+mpb convert input.pdf --use-segments
+
+# 查看项目信息
+mpb info
+
+# 查看版本
+mpb version
+```
+
+### 使用 Python 模块运行
+
+```bash
+python -m make_practice_book convert input.docx
+```
+
+### 命令行选项
+
+| 选项 | 说明 |
+|------|------|
+| `--output-file, -o` | 指定输出文件路径 |
+| `--api-key` | AI API 密钥 |
+| `--api-base` | AI API 基础 URL |
+| `--model, -m` | 使用的 AI 模型 |
+| `--provider, -p` | AI 提供商（openai, groq, zhipu） |
+| `--skip-ai` | 跳过 AI 处理，仅转换为 Markdown |
+| `--use-segments` | 分段处理长内容 |
+| `--tesseract-cmd` | Tesseract 可执行文件路径 |
+
+## 工作流程
+
+```
+输入文件 (DOCX/DOC/PDF)
+    ↓
+文件转换 (使用 OCR 处理扫描版 PDF)
+    ↓
+生成 Markdown
+    ↓
+AI 处理 (重新组织为做题本格式)
+    ↓
+输出做题本文件 (Markdown)
+```
+
+## 项目结构
+
+```
+make_practice_book/
+├── __init__.py          # 包初始化
+├── __main__.py          # 模块入口
+├── version.py           # 版本信息
+├── file_converter.py    # 文件转换模块
+├── ai_processor.py      # AI 处理模块
+└── cli.py              # CLI 接口
+```
+
+## 开发指南
+
+### 模块说明
+
+#### file_converter.py
+负责将 docx/doc/pdf 文件转换为 Markdown 格式：
+- 支持直接文本提取
+- 使用 OCR 处理扫描版文档
+- 图像预处理提高 OCR 准确率
+
+#### ai_processor.py
+使用 AI API 将 Markdown 内容转换为做题本格式：
+- 支持多种 AI 提供商
+- 分段处理长文档
+- 自定义提示词
+
+#### cli.py
+提供友好的命令行界面：
+- 使用 Typer 构建
+- Rich 库提供美观的终端输出
+- 进度条和状态提示
+
+## 示例
+
+### 转换 DOCX 文件
+
+```bash
+mpb convert 中国科学技术大学.docx
+```
+
+输出：
+```
+╭──────────────────────────────────────╮
+│ Processing file: 中国科学技术大学.docx   │
+│ Output file: 中国科学技术大学_exercise_book.md │
+╰──────────────────────────────────────╯
+
+⠋ Converting file to Markdown...
+✓ File conversion completed
+⠋ AI processing...
+✓ AI processing completed
+⠋ Saving file...
+✓ File saved successfully
+
+╭────────────────────────────────────────╮
+│ Exercise book generated successfully!   │
+│ Output: 中国科学技术大学_exercise_book.md  │
+╰────────────────────────────────────────╯
+```
+
+## 常见问题
+
+### Q: 如何处理扫描版 PDF？
+A: 确保已安装 Tesseract OCR 及中文语言包，工具会自动检测并使用 OCR。
+
+### Q: AI 处理失败怎么办？
+A: 可以使用 `--skip-ai` 选项跳过 AI 处理，只生成 Markdown 文件。
+
+### Q: 如何自定义 AI 提示词？
+A: 可以直接修改 `ai_processor.py` 中的 `_get_default_prompt` 方法。
+
+### Q: 支持哪些 AI 模型？
+A: 支持所有兼容 OpenAI API 格式的模型，包括 OpenAI、Groq、智谱 AI 等。
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 许可证
+
+[根据你的项目许可证填写]
+
+---
+
+## GUI 使用（简体中文）
+
+提供图形界面，便于不熟悉命令行的同学使用。
+
+### 启动方式
+
+- 命令行：
+
+```bash
+mpb-gui
+```
+
+- Python 模块：
+
+```bash
+python -m make_practice_book.gui
+```
+
+- Windows 双击脚本：
+
+双击运行仓库根目录的 `make_practice_book_gui.bat`。
+
+### GUI 功能
+
+- 选择输入文件（.docx / .doc / .pdf）
+- 可选 Tesseract 路径（用于扫描版 PDF 的 OCR）
+- 选择 AI 提供商（OpenAI / Groq / 智谱AI）
+- 可选分段处理长文档
+- 跳过 AI 仅输出原始 Markdown
+- 实时日志与忙碌指示
+
+提示：.doc（老格式）在多数环境中需要先转换为 .docx 后再处理。
+
+## 打包为 Windows EXE（无需安装 Python）
+
+以下命令在 Windows PowerShell 中执行，建议提前创建并激活虚拟环境，且已执行 `pip install -e .`：
+
+```powershell
+pyinstaller --noconfirm --clean --windowed `
+  --name MakePracticeBook-GUI `
+  gui_entry.py
+```
+
+打包完成后，生成目录：`dist/MakePracticeBook-GUI/`，其中的 `MakePracticeBook-GUI.exe` 可直接运行。
+
+注意事项：
+
+- OCR 功能依赖 Tesseract，请单独安装，并在 GUI 中指定其路径（或将其添加到系统 PATH）。
+- AI 功能需要 API Key，可在 GUI 中填写，或通过环境变量设置（`API_KEY`/`GROQ_API_KEY`/`ZHIPUAI_API_KEY`）。
+- 首次运行可能较慢，后续会更快。
+
+---
+
+## 旧版本说明
+
+以下是项目的旧版本内容，用于通过 PS 切片制作做题本：
+

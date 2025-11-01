@@ -5,19 +5,27 @@ description = "考研 做题本 生成"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "typer[all]",
+    "typer",
     "rich",
     "pymupdf",
     "pytesseract",
     "opencv-python",
     "numpy",
     "pillow",
-    "docx2pdf",
+    "python-docx",
+    "requests",
+    "pyyaml",
+    "python-dotenv",
     "pyinstaller>=6.16.0",
+    "groq",
+    "zhipuai",
+    "PyQt5",
+    "PyQt5-Qt5==5.15.2; platform_system == \"Windows\"",
 ]
 
 [project.scripts]
 mpb = "make_practice_book.cli:app"
+mpb-gui = "make_practice_book.gui:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

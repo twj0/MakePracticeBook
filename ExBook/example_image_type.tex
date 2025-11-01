@@ -1,0 +1,53 @@
+% 使用 ExBook 文档类，并传递选项
+\documentclass[padl]{ExBook} 
+
+\begin{document} 
+
+% 加载配置
+\include{config}
+
+% 加载封面
+\maketitle 
+
+% 加载声明
+\include{contents/pre} 
+
+% 加载广告
+\include{contents/print}
+
+\setcounter{page}{1}
+\tableofcontents 
+    
+\clearpage 
+
+\section{截图型刷题本第一章}
+\subsection{截图型刷题本第一章第1节}
+\qanswerloc{10}
+
+\begin{qitems}
+    \insertimg{1}{3}{0.30}{l}{split-images/}
+\end{qitems} 
+
+\subsection{截图型刷题本第一章第2节}
+\qanswerloc{20}
+
+\begin{qitems}
+    \insertimg{4}{6}{0.30}{l}{split-images/}
+\end{qitems}
+ 
+\section{截图型刷题本第二章}
+\subsection{截图型刷题本第二章第1节}
+\qanswerloc{30}
+
+\begin{qitems}
+    \insertimg{7}{8}{0.30}{l}{split-images/}
+\end{qitems}
+
+\subsection{截图型刷题本第二章第2节}
+\qanswerloc{40}
+
+\begin{qitems}
+    \insertimg{9}{10}{0.30}{l}{split-images/}
+\end{qitems}
+
+\end{document}

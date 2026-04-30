@@ -42,43 +42,71 @@
 - 这个仓库已经支持代理环境变量，适合中国大陆网络环境
 - Groq 支持多 API Key 轮换
 
-## 安装
+## 安装与使用
 
-### 开发态
+这个仓库当前以 PowerShell 为主入口，不把 `exe` 作为日常使用方式。
 
-```powershell
-pip install -e .
-```
+### 1. 准备环境
 
-然后直接使用：
+推荐直接使用仓库内的 `.venv`：
 
 ```powershell
-mpb --help
+uv sync
 ```
 
-### 打包为 EXE
+如果你已经有现成环境，也可以继续使用自己的 Python 环境，只要依赖齐全即可。
+
+### 2. 注册全局命令
+
+在仓库根目录执行：
 
 ```powershell
-pyinstaller mpb.spec
+.\install-mpb-path.ps1
 ```
 
-生成目录：
+这个脚本会：
 
-```text
-dist/mpb/mpb.exe
-```
+- 把仓库目录加入用户 `PATH`
+- 把 `mpb` 函数写入 PowerShell 用户配置文件
+- 让你在新的 `pwsh` 窗口里直接使用 `mpb`
 
-把目录加入用户 PATH：
+执行完成后，重新打开一个 `pwsh` 窗口，检查帮助：
 
 ```powershell
-.\mpb.ps1
+mpb -h
 ```
 
-之后重新打开终端：
+### 3. 日常使用
+
+生成做题本：
 
 ```powershell
-mpb --help
+mpb build examples\中国科学技术大学.docx --provider openai --compile
 ```
+
+只提取源文本：
+
+```powershell
+mpb extract examples\中国科学技术大学.docx
+```
+
+单独编译 TeX：
+
+```powershell
+mpb compile out\中国科学技术大学.tex
+```
+
+查看环境信息：
+
+```powershell
+mpb info
+```
+
+默认规则：
+
+- 输出目录默认是你**当前工作目录**下的 `out/`
+- 输出文件名默认沿用输入文件名
+- 只有显式传入 `--output-stem` 时才会改名
 
 ## 配置
 
@@ -99,44 +127,18 @@ ALL_PROXY=socks5://127.0.0.1:10808
 - `GROQ_API_KEYS` 使用分号分隔，程序会在可恢复错误时自动切换
 - 若同时设置 `--api-key`，命令行参数优先
 
-## 命令
-
-### 1. 生成做题本
-
-```powershell
-mpb build examples\中国科学技术大学.docx --provider openai --compile
-```
-
-常见参数：
+## 常用参数
 
 - `--output-dir out`
 - `--output-stem custom_name`
 - `--provider openai`
 - `--api-key xxx`
 - `--api-keys key1;key2;key3`
-- `--model llama-3.1-70b-versatile`
+- `--model longcat-flash-lite`
 - `--use-segments`
 - `--ocr-backend paddle`
 - `--doc-strategy auto`
 - `--engine latexmk`
-
-### 2. 只提取源文本
-
-```powershell
-mpb extract examples\中国科学技术大学.docx
-```
-
-### 3. 单独编译 TeX
-
-```powershell
-mpb compile out\中国科学技术大学.tex
-```
-
-### 4. 查看环境信息
-
-```powershell
-mpb info
-```
 
 ## 模块结构
 

@@ -1,24 +1,23 @@
 param(
-    [string]$TargetDir = (Join-Path $PSScriptRoot "dist\mpb")
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$CliArgs
 )
 
-$resolved = [System.IO.Path]::GetFullPath($TargetDir)
-if (-not (Test-Path $resolved)) {
-    throw "Target directory not found: $resolved"
+$repoRoot = $PSScriptRoot
+$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$entry = Join-Path $repoRoot "main.py"
+
+if (-not (Test-Path $entry)) {
+    throw "未找到入口文件: $entry"
 }
 
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$parts = @()
-if ($userPath) {
-    $parts = $userPath.Split(';', [System.StringSplitOptions]::RemoveEmptyEntries)
+if (-not (Test-Path $python)) {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -eq $pythonCommand) {
+        throw "未找到 .venv\\Scripts\\python.exe，也未检测到系统 python。"
+    }
+    $python = $pythonCommand.Source
 }
 
-if ($parts -contains $resolved) {
-    Write-Host "PATH already contains $resolved"
-    return
-}
-
-$updated = if ($userPath) { "$userPath;$resolved" } else { $resolved }
-[Environment]::SetEnvironmentVariable("Path", $updated, "User")
-Write-Host "Added to user PATH: $resolved"
-Write-Host "Open a new terminal and run: mpb --help"
+& $python $entry @CliArgs
+exit $LASTEXITCODE

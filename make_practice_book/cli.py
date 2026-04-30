@@ -1,321 +1,525 @@
 """
-Exercise Book Generator CLI Interface
+CLI for building practice-book PDFs from doc/docx/pdf/md/txt inputs.
 """
 
-import typer
+from __future__ import annotations
+
+import os
+import re
+import shutil
 from pathlib import Path
 from typing import Optional
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
-from rich.panel import Panel
-import os
-import subprocess
-import shutil
-from dotenv import load_dotenv, find_dotenv
 
+import typer
+from dotenv import find_dotenv, load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from .ai_processor import process_with_ai_exbook
+from .chunking import SourceChunk, chunk_source_text, write_chunk_report
+from .exbook_writer import write_exbook_output
 from .file_converter import FileConverter
-from .ai_processor import AIProcessor, GroqProcessor, ZhipuAIProcessor
+from .latex_compiler import compile_latex
 from .version import __version__
+
+
+load_dotenv(find_dotenv(), override=False)
 
 app = typer.Typer(
     name="mpb",
-    help="Exercise Book Generator - Convert docx/doc/pdf files to handwritten exercise book format",
-    add_completion=False
+    help="Build ExBook practice books from doc/docx/pdf/md/txt inputs.",
+    add_completion=False,
 )
 console = Console()
 
-# Load environment variables from .env if present (searching upwards)
-load_dotenv(find_dotenv(), override=False)
+
+def _default_output_dir() -> Path:
+    return Path.cwd() / "out"
+
+
+def _base_stem(input_file: Path, output_stem: Optional[str]) -> str:
+    return output_stem.strip() if output_stem else input_file.stem
+
+
+def _parse_api_keys(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(";") if item.strip()]
 
 
 @app.command()
-def convert(
-    input_file: Path = typer.Argument(..., help="Input file path (.docx, .pdf)", exists=True),
-    output_file: Optional[Path] = typer.Option(None, "--output-file", "-o", help="Output file path"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override (uses GROQ_API_KEY or ZHIPUAI_API_KEY from env if omitted)"),
-    model: str = typer.Option("glm-4", "--model", "-m", help="AI model to use (e.g., glm-4, llama3-70b-8192)"),
-    skip_ai: bool = typer.Option(False, "--skip-ai", help="Skip AI processing, only convert to Markdown"),
-    use_segments: bool = typer.Option(False, "--use-segments", help="Process long content in segments"),
-    tesseract_cmd: Optional[str] = typer.Option(None, "--tesseract-cmd", help="Path to tesseract executable"),
-    provider: Optional[str] = typer.Option("zhipu", "--provider", "-p", help="AI provider: groq, zhipu"),
-    exbook: bool = typer.Option(False, "--exbook", help="Output ExBook LaTeX to out/main.tex instead of Markdown"),
-    compile_pdf: bool = typer.Option(False, "--compile", help="Compile out/main.tex to PDF (requires xelatex/pdflatex)")
+def build(
+    input_file: Path = typer.Argument(
+        ...,
+        exists=True,
+        help="Input file path (.doc, .docx, .pdf, .md, .txt)",
+    ),
+    output_dir: Path = typer.Option(
+        _default_output_dir(),
+        "--output-dir",
+        "-o",
+        help="Directory for generated .md/.tex/.pdf files.",
+    ),
+    output_stem: Optional[str] = typer.Option(
+        None,
+        "--output-stem",
+        help="Override the output file stem.",
+    ),
+    provider: str = typer.Option(
+        "openai",
+        "--provider",
+        "-p",
+        help="AI provider: openai, groq or zhipu.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="Single API key override.",
+    ),
+    api_keys: Optional[str] = typer.Option(
+        None,
+        "--api-keys",
+        help="Semicolon-separated API key pool, mainly for Groq.",
+    ),
+    api_base: Optional[str] = typer.Option(
+        None,
+        "--api-base",
+        help="Override the OpenAI-compatible API base URL.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Model name override.",
+    ),
+    use_segments: bool = typer.Option(
+        False,
+        "--use-segments",
+        help="Split long source text into multiple AI calls.",
+    ),
+    segment_size: int = typer.Option(
+        2400,
+        "--segment-size",
+        help="Maximum characters per inner AI segment when --use-segments is enabled.",
+    ),
+    chunk_size: int = typer.Option(
+        6000,
+        "--chunk-size",
+        help="Maximum characters per locally chunked section before LLM formatting.",
+    ),
+    max_output_tokens: int = typer.Option(
+        5000,
+        "--max-output-tokens",
+        help="Maximum output tokens requested from the AI provider for each chunk.",
+    ),
+    min_coverage_ratio: float = typer.Option(
+        0.6,
+        "--min-coverage-ratio",
+        help="Retry with smaller chunks when output qitem coverage falls below this ratio.",
+    ),
+    max_chunk_recursion: int = typer.Option(
+        2,
+        "--max-chunk-recursion",
+        help="Maximum retry depth for automatically subdividing low-coverage chunks.",
+    ),
+    include_answers: bool = typer.Option(
+        False,
+        "--include-answers",
+        help="Include answer sections when the source contains both questions and answers.",
+    ),
+    compile_pdf_flag: bool = typer.Option(
+        True,
+        "--compile/--no-compile",
+        help="Compile the generated .tex into PDF.",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        help="LaTeX engine: auto, latexmk, xelatex, pdflatex.",
+    ),
+    ocr_backend: str = typer.Option(
+        "paddle",
+        "--ocr-backend",
+        help="OCR backend: paddle, tesseract, auto, none.",
+    ),
+    tesseract_cmd: Optional[str] = typer.Option(
+        None,
+        "--tesseract-cmd",
+        help="Path to the Tesseract executable when using Tesseract OCR.",
+    ),
+    doc_strategy: str = typer.Option(
+        "auto",
+        "--doc-strategy",
+        help="Legacy .doc conversion strategy: auto, office, libreoffice.",
+    ),
 ):
     """
-    Convert document file to exercise book format
-    
-    Examples:
-        mpb convert input.docx
-        mpb convert input.pdf --output-file my_book.md
-        mpb convert input.docx --skip-ai
-        mpb convert input.pdf --provider groq
+    Convert an input file into ExBook TeX and optionally compile it into PDF.
     """
-    # Check file format
-    suffix = input_file.suffix.lower()
-    if suffix == '.doc':
-        console.print("[red]Error: .doc (legacy) is not supported. Please convert to .docx first.[/red]")
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = _base_stem(input_file, output_stem)
+        source_md_path = output_dir / f"{stem}.source.md"
+        chunks_json_path = output_dir / f"{stem}.chunks.json"
+        tex_path = output_dir / f"{stem}.tex"
+
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        f"[bold cyan]Input:[/bold cyan] {input_file}",
+                        f"[bold cyan]Output dir:[/bold cyan] {output_dir}",
+                        f"[bold cyan]Provider:[/bold cyan] {provider}",
+                        f"[bold cyan]OCR:[/bold cyan] {ocr_backend}",
+                    ]
+                ),
+                title="MakePracticeBook",
+                border_style="cyan",
+            )
+        )
+
+        converter = FileConverter(
+            ocr_backend=ocr_backend,
+            tesseract_cmd=tesseract_cmd,
+            doc_strategy=doc_strategy,
+        )
+        markdown_content = converter.convert_to_markdown(str(input_file))
+        markdown_content = FileConverter.clean_text(markdown_content)
+        source_md_path.write_text(markdown_content, encoding="utf-8")
+        console.print(f"[green]✓[/green] Source Markdown saved: {source_md_path}")
+        _print_trace(converter.trace)
+
+        report = chunk_source_text(
+            markdown_content,
+            max_chars=chunk_size,
+            include_answers=include_answers,
+        )
+        write_chunk_report(report, chunks_json_path)
+        console.print(f"[green]✓[/green] Chunk report saved: {chunks_json_path}")
+        console.print(
+            f"[cyan]Chunking:[/cyan] sections={report.section_count}, "
+            f"chunks={report.chunk_count}, estimated_questions={report.estimated_questions}"
+        )
+        if not include_answers:
+            console.print("[cyan]Filter:[/cyan] answer sections are excluded by default")
+
+        snippets: list[str] = []
+        for index, chunk in enumerate(report.chunks, start=1):
+            console.print(
+                f"[cyan]LLM chunk {index}/{report.chunk_count}[/cyan] "
+                f"{chunk.chunk_id} year={chunk.year or '-'} chars={chunk.char_count} "
+                f"q~={chunk.question_estimate}"
+            )
+            snippets.extend(
+                _render_chunk_with_fallback(
+                    chunk,
+                    provider=provider,
+                    api_key=api_key,
+                    api_keys=_parse_api_keys(api_keys),
+                    api_base=api_base,
+                    model=model,
+                    use_segments=use_segments,
+                    segment_size=segment_size,
+                    max_output_tokens=max_output_tokens,
+                    min_coverage_ratio=min_coverage_ratio,
+                    max_chunk_recursion=max_chunk_recursion,
+                    base_chunk_size=chunk_size,
+                )
+            )
+
+        latex_snippet = "\n\n".join(part for part in snippets if part)
+        write_exbook_output(latex_snippet, tex_path)
+        console.print(f"[green]✓[/green] ExBook TeX saved: {tex_path}")
+        _print_coverage_stats(report.estimated_questions, tex_path)
+
+        if compile_pdf_flag:
+            pdf_path = compile_latex(tex_path, engine=engine)
+            console.print(f"[green]✓[/green] PDF generated: {pdf_path}")
+    except Exception as exc:
+        console.print(f"[red]✗ Build failed:[/red] {exc}")
         raise typer.Exit(1)
-    supported_formats = ['.docx', '.pdf']
-    if suffix not in supported_formats:
-        console.print(f"[red]Error: Unsupported file format. Supported formats: {', '.join(supported_formats)}[/red]")
+
+
+@app.command()
+def extract(
+    input_file: Path = typer.Argument(
+        ...,
+        exists=True,
+        help="Input file path (.doc, .docx, .pdf, .md, .txt)",
+    ),
+    output_file: Optional[Path] = typer.Option(
+        None,
+        "--output-file",
+        "-o",
+        help="Where to save the extracted Markdown-like text.",
+    ),
+    ocr_backend: str = typer.Option(
+        "paddle",
+        "--ocr-backend",
+        help="OCR backend: paddle, tesseract, auto, none.",
+    ),
+    tesseract_cmd: Optional[str] = typer.Option(
+        None,
+        "--tesseract-cmd",
+        help="Path to the Tesseract executable when using Tesseract OCR.",
+    ),
+    doc_strategy: str = typer.Option(
+        "auto",
+        "--doc-strategy",
+        help="Legacy .doc conversion strategy: auto, office, libreoffice.",
+    ),
+):
+    """
+    Only extract normalized text/Markdown from the input file.
+    """
+    try:
+        output_path = output_file or input_file.with_suffix(".source.md")
+        converter = FileConverter(
+            ocr_backend=ocr_backend,
+            tesseract_cmd=tesseract_cmd,
+            doc_strategy=doc_strategy,
+        )
+        markdown_content = converter.convert_to_markdown(str(input_file))
+        markdown_content = FileConverter.clean_text(markdown_content)
+        output_path.write_text(markdown_content, encoding="utf-8")
+        console.print(f"[green]✓[/green] Extracted source saved: {output_path}")
+        _print_trace(converter.trace)
+    except Exception as exc:
+        console.print(f"[red]✗ Extract failed:[/red] {exc}")
         raise typer.Exit(1)
-    
-    # Set default output file name (Markdown mode)
-    if output_file is None and not exbook:
-        output_file = input_file.with_name(f"{input_file.stem}_exercise_book.md")
-    
-    # Compose an initial status panel (for ExBook we will show target .tex later)
-    panel_lines = [f"[bold cyan]Processing file:[/bold cyan] {input_file}"]
-    if not exbook:
-        panel_lines.append(f"[bold cyan]Output file:[/bold cyan] {output_file}")
-    console.print(Panel.fit(
-        "\n".join(panel_lines),
-        title="Exercise Book Generator",
-        border_style="cyan"
-    ))
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        # Step 1: File conversion
-        task1 = progress.add_task("[cyan]Converting file to Markdown...", total=None)
-        converter = FileConverter(tesseract_cmd=tesseract_cmd)
-        try:
-            markdown_content = converter.convert_to_markdown(str(input_file))
-            markdown_content = FileConverter.clean_text(markdown_content)
-            progress.update(task1, completed=True)
-            console.print("[green]✓[/green] File conversion completed")
-        except Exception as e:
-            progress.stop()
-            console.print(f"[red]✗ File conversion failed: {str(e)}[/red]")
-            raise typer.Exit(1)
-        
-        # If skip AI processing
-        if skip_ai:
-            if exbook:
-                # Write ExBook template with empty snippet
-                base_name = input_file.stem
-                tex_path = _write_exbook_output("", base_name=base_name)
-                console.print(f"[green]✓[/green] ExBook LaTeX generated: {tex_path}")
-                if compile_pdf:
-                    _compile_pdf(console, tex_filename=f"{base_name}.tex")
-                return
-            else:
-                task_save = progress.add_task("[cyan]Saving file...", total=None)
-                try:
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(markdown_content)
-                    progress.update(task_save, completed=True)
-                    console.print("[green]✓[/green] File saved successfully")
-                    console.print(f"[green]Original Markdown file generated:[/green] {output_file}")
-                    return
-                except Exception as e:
-                    progress.stop()
-                    console.print(f"[red]✗ File save failed: {str(e)}[/red]")
-                    raise typer.Exit(1)
-        
-        # Step 2: AI processing
-        task2 = progress.add_task("[cyan]AI processing...", total=None)
-        
-        try:
-            # Select AI processor based on provider
-            if provider == "groq":
-                processor = GroqProcessor(api_key=api_key)
-            elif provider == "zhipu":
-                processor = ZhipuAIProcessor(api_key=api_key)
-            else:
-                console.print("[red]Error: Unknown provider. Use 'groq' or 'zhipu'.[/red]")
-                raise typer.Exit(1)
-            
-            if exbook:
-                exercise_book_content = processor.process_to_exbook_latex(markdown_content)
-            else:
-                if use_segments:
-                    exercise_book_content = processor.process_with_segments(markdown_content)
-                else:
-                    exercise_book_content = processor.process_exercise_book(markdown_content)
-            
-            progress.update(task2, completed=True)
-            console.print("[green]✓[/green] AI processing completed")
-        except Exception as e:
-            progress.stop()
-            console.print(f"[red]✗ AI processing failed: {str(e)}[/red]")
-            console.print("[yellow]Tip: You can use --skip-ai to generate Markdown without AI processing[/yellow]")
-            raise typer.Exit(1)
-        
-        # Step 3: Save file
-        if exbook:
-            # Write ExBook LaTeX to out/{input_stem}.tex
-            try:
-                base_name = input_file.stem
-                tex_path = _write_exbook_output(exercise_book_content, base_name=base_name)
-                console.print(f"[green]✓[/green] ExBook LaTeX generated: {tex_path}")
-                if compile_pdf:
-                    _compile_pdf(console, tex_filename=f"{base_name}.tex")
-            except Exception as e:
-                progress.stop()
-                console.print(f"[red]✗ ExBook save failed: {str(e)}[/red]")
-                raise typer.Exit(1)
-        else:
-            task3 = progress.add_task("[cyan]Saving file...", total=None)
-            try:
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(exercise_book_content)
-                progress.update(task3, completed=True)
-                console.print("[green]✓[/green] File saved successfully")
-            except Exception as e:
-                progress.stop()
-                console.print(f"[red]✗ File save failed: {str(e)}[/red]")
-                raise typer.Exit(1)
-    
-    console.print(Panel.fit(
-        f"[bold green]Exercise book generated successfully![/bold green]\n"
-        f"[cyan]Output:[/cyan] {output_file}",
-        border_style="green"
-    ))
+
+
+@app.command("compile")
+def compile_cmd(
+    tex_file: Path = typer.Argument(..., exists=True, help="Path to a .tex file."),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        help="LaTeX engine: auto, latexmk, xelatex, pdflatex.",
+    ),
+):
+    """
+    Compile an existing TeX file into PDF.
+    """
+    try:
+        pdf_path = compile_latex(tex_file, engine=engine)
+        console.print(f"[green]✓[/green] PDF generated: {pdf_path}")
+    except Exception as exc:
+        console.print(f"[red]✗ Compile failed:[/red] {exc}")
+        raise typer.Exit(1)
 
 
 @app.command()
 def info():
     """
-    Display project information
+    Show environment and dependency information.
     """
-    table = Table(title="Exercise Book Generator Information", show_header=True, header_style="bold cyan")
-    table.add_column("Item", style="cyan", width=20)
-    table.add_column("Details", style="magenta")
-    
+    table = Table(title="MakePracticeBook CLI", show_header=True, header_style="bold cyan")
+    table.add_column("Item", style="cyan", width=24)
+    table.add_column("Value", style="magenta")
     table.add_row("Version", __version__)
-    table.add_row("Supported Input", "docx, pdf")
-    table.add_row("Output Format", "Markdown or ExBook LaTeX (--exbook)")
-    table.add_row("AI Support", "Groq/ZhipuAI and compatible OpenAI APIs")
-    table.add_row("OCR Support", "Yes (for scanned PDFs)")
-    
+    table.add_row("Supported Input", "doc, docx, pdf, md, txt")
+    table.add_row("OCR Backends", "paddle, tesseract, auto, none")
+    table.add_row("AI Providers", "openai, groq, zhipu")
+    table.add_row("LaTeX Engine", "latexmk/xelatex/pdflatex")
     console.print(table)
-    
-    console.print("\n[bold cyan]Environment Variables:[/bold cyan]")
-    env_table = Table(show_header=True, header_style="bold yellow")
+
+    env_table = Table(title="Environment", show_header=True, header_style="bold yellow")
     env_table.add_column("Variable", style="yellow")
-    env_table.add_column("Description", style="white")
-    env_table.add_column("Status", style="green")
-    
-    env_vars = [
-        ("GROQ_API_KEY", "Groq API key", os.getenv("GROQ_API_KEY")),
-        ("ZHIPUAI_API_KEY", "Zhipu AI API key", os.getenv("ZHIPUAI_API_KEY")),
-    ]
-    
-    for var_name, description, value in env_vars:
-        status = "✓ Set" if value else "✗ Not set"
-        style = "green" if value else "red"
-        env_table.add_row(var_name, description, f"[{style}]{status}[/{style}]")
-    
+    env_table.add_column("Status")
+    env_table.add_row("OPENAI_API_KEY", _mark(os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")))
+    env_table.add_row("OPENAI_API_BASE", _mark(os.getenv("OPENAI_API_BASE") or os.getenv("API_BASE")))
+    env_table.add_row("GROQ_API_KEY", _mark(os.getenv("GROQ_API_KEY")))
+    env_table.add_row("GROQ_API_KEYS", _mark(os.getenv("GROQ_API_KEYS") or os.getenv("GROQ_API_kEYS")))
+    env_table.add_row("ZHIPUAI_API_KEY", _mark(os.getenv("ZHIPUAI_API_KEY") or os.getenv("ZHIPU_API_KEY")))
+    env_table.add_row("HTTP_PROXY", _mark(os.getenv("HTTP_PROXY")))
+    env_table.add_row("HTTPS_PROXY", _mark(os.getenv("HTTPS_PROXY")))
+    env_table.add_row("ALL_PROXY", _mark(os.getenv("ALL_PROXY")))
     console.print(env_table)
 
+    binaries = Table(title="Detected Binaries", show_header=True, header_style="bold green")
+    binaries.add_column("Binary", style="green")
+    binaries.add_column("Path", style="white")
+    for binary in ("latexmk", "xelatex", "pdflatex", "soffice", "powershell.exe"):
+        binaries.add_row(binary, shutil.which(binary) or "-")
+    console.print(binaries)
 
-def _build_exbook_document(snippet: str) -> str:
-    lines = [
-        r"\newcommand{\EXBOOKDIR}{ExBook}",
-        r"\IfFileExists{../ExBook/ExBook.cls}{\renewcommand{\EXBOOKDIR}{../ExBook}}{}",
-        r"\IfFileExists{ExBook/ExBook.cls}{\renewcommand{\EXBOOKDIR}{ExBook}}{}",
-        r"\documentclass[standard]{\EXBOOKDIR/ExBook}",
-        r"\usepackage{graphicx}",
-        r"\graphicspath{{\EXBOOKDIR/}{\EXBOOKDIR/img/}}",
-        r"\begin{document}",
-        r"\input{\EXBOOKDIR/config.tex}",
-        r"\maketitle",
-        r"\input{\EXBOOKDIR/contents/pre.tex}",
-        r"\input{\EXBOOKDIR/contents/print.tex}",
-        r"\setcounter{page}{1}",
-        r"\tableofcontents",
-        "",
-        r"% AI 生成内容开始",
-    ]
-    if snippet and snippet.strip():
-        lines.append(snippet.strip())
-    else:
-        lines.append(r"% (空) 跳过 AI 处理，未插入内容")
-    lines += [
-        "",
-        r"% AI 生成内容结束",
-        "",
-        r"\end{document}",
-    ]
-    return "\n".join(lines)
-
-
-def _write_exbook_output(snippet: str, base_name: str = "main") -> str:
-    out_dir = Path.cwd() / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_tex = out_dir / f"{base_name}.tex"
-    content = _build_exbook_document(snippet)
-    with open(out_tex, "w", encoding="utf-8") as f:
-        f.write(content)
-    return str(out_tex)
-
-
-def _compile_pdf(console: Console, tex_filename: str = "main.tex"):
-    out_dir = Path.cwd() / "out"
-    out_tex = out_dir / tex_filename
-    if not out_tex.exists():
-        console.print(f"[red]{out_tex} not found. Generate LaTeX first.[/red]")
-        raise typer.Exit(1)
-    engine = shutil.which("latexmk") or shutil.which("xelatex") or shutil.which("pdflatex")
-    if not engine:
-        console.print("[red]latexmk/xelatex/pdflatex not found in PATH.[/red]")
-        raise typer.Exit(1)
-    console.print(f"[cyan]Compiling with {engine}...[/cyan]")
-    if engine.lower().endswith("latexmk.exe") or os.path.basename(engine).lower() == "latexmk":
-        proc = subprocess.run(
-            [engine, "-xelatex", "-pdf", tex_filename],
-            cwd=str(out_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-        )
-        console.print(proc.stdout)
-        if proc.returncode != 0:
-            console.print("[red]latexmk compile failed.[/red]")
-            raise typer.Exit(1)
-    else:
-        for i in range(2):
-            proc = subprocess.run(
-                [engine, "-interaction=nonstopmode", "-halt-on-error", tex_filename],
-                cwd=str(out_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-            )
-            console.print(proc.stdout)
-            if proc.returncode != 0:
-                console.print(f"[red]LaTeX compile failed on pass {i+1}.[/red]")
-                raise typer.Exit(1)
-    # Determine expected PDF name from tex filename
-    pdf_basename = Path(tex_filename).with_suffix("")
-    pdf_path = out_dir / f"{pdf_basename}.pdf"
-    if pdf_path.exists():
-        console.print(f"[green]✓ PDF generated:[/green] {pdf_path}")
-    else:
-        console.print(f"[yellow]Compile finished, but {pdf_path.name} not found.[/yellow]")
+    packages = Table(title="Python Packages", show_header=True, header_style="bold blue")
+    packages.add_column("Package", style="blue")
+    packages.add_column("Status")
+    for package in ("docx", "fitz", "paddleocr", "paddle", "pytesseract"):
+        packages.add_row(package, _mark_import(package))
+    console.print(packages)
 
 
 @app.command()
 def version():
     """
-    Display version information
+    Show version information.
     """
-    console.print(f"[bold cyan]Exercise Book Generator[/bold cyan] version [bold green]{__version__}[/bold green]")
+    console.print(f"[bold cyan]MakePracticeBook[/bold cyan] [bold green]{__version__}[/bold green]")
 
 
 @app.callback()
 def main():
     """
-    Exercise Book Generator - Convert docx/doc/pdf files to handwritten exercise book format
+    MakePracticeBook CLI.
     """
     pass
+
+
+def _mark(value: Optional[str]) -> str:
+    return "[green]set[/green]" if value else "[red]not set[/red]"
+
+
+def _mark_import(module_name: str) -> str:
+    try:
+        __import__(module_name)
+        return "[green]available[/green]"
+    except Exception:
+        return "[red]missing[/red]"
+
+
+def _print_trace(trace: list[str]) -> None:
+    if not trace:
+        return
+    console.print("[bold cyan]Extraction Trace[/bold cyan]")
+    for item in trace:
+        console.print(f"  - {item}")
+
+
+def _print_coverage_stats(input_question_estimate: int, tex_path: Path) -> None:
+    tex = tex_path.read_text(encoding="utf-8", errors="ignore")
+    output_qitems = _count_qitems(tex)
+    ratio = (output_qitems / input_question_estimate) if input_question_estimate else 0.0
+    console.print(
+        "[bold cyan]Coverage[/bold cyan]\n"
+        f"  - estimated input questions: {input_question_estimate}\n"
+        f"  - output qitems: {output_qitems}\n"
+        f"  - output/input ratio: {ratio:.2%}"
+    )
+
+
+def _render_chunk_with_fallback(
+    chunk: SourceChunk,
+    *,
+    provider: str,
+    api_key: Optional[str],
+    api_keys: list[str],
+    api_base: Optional[str],
+    model: Optional[str],
+    use_segments: bool,
+    segment_size: int,
+    max_output_tokens: int,
+    min_coverage_ratio: float,
+    max_chunk_recursion: int,
+    base_chunk_size: int,
+    depth: int = 0,
+) -> list[str]:
+    snippet = process_with_ai_exbook(
+        chunk.content,
+        provider=provider,
+        api_key=api_key,
+        api_keys=api_keys,
+        api_base=api_base,
+        model=model,
+        use_segments=use_segments,
+        segment_size=segment_size,
+        max_output_tokens=max_output_tokens,
+        section_title=chunk.title,
+        expected_question_count=chunk.question_estimate,
+    ).strip()
+
+    output_qitems = _count_qitems(snippet)
+    coverage_ratio = _coverage_ratio(chunk.question_estimate, output_qitems)
+    console.print(
+        f"  -> output qitems={output_qitems} coverage={coverage_ratio:.2%}"
+    )
+
+    if not _should_refine_chunk(
+        chunk=chunk,
+        output_qitems=output_qitems,
+        coverage_ratio=coverage_ratio,
+        min_coverage_ratio=min_coverage_ratio,
+        depth=depth,
+        max_chunk_recursion=max_chunk_recursion,
+    ):
+        return [snippet]
+
+    retry_chunk_size = max(800, min(base_chunk_size // 2, max(1200, chunk.char_count // 2)))
+    subchunks = _split_chunk_for_retry(chunk, retry_chunk_size)
+    if len(subchunks) <= 1:
+        return [snippet]
+
+    console.print(
+        f"  -> [yellow]coverage low, retrying with {len(subchunks)} smaller chunks[/yellow]"
+    )
+    snippets: list[str] = []
+    for subchunk in subchunks:
+        snippets.extend(
+            _render_chunk_with_fallback(
+                subchunk,
+                provider=provider,
+                api_key=api_key,
+                api_keys=api_keys,
+                api_base=api_base,
+                model=model,
+                use_segments=use_segments,
+                segment_size=segment_size,
+                max_output_tokens=max_output_tokens,
+                min_coverage_ratio=min_coverage_ratio,
+                max_chunk_recursion=max_chunk_recursion,
+                base_chunk_size=retry_chunk_size,
+                depth=depth + 1,
+            )
+        )
+    return snippets
+
+
+def _split_chunk_for_retry(chunk: SourceChunk, max_chars: int) -> list[SourceChunk]:
+    report = chunk_source_text(chunk.content, max_chars=max_chars, include_answers=True)
+    subchunks: list[SourceChunk] = []
+    for index, subchunk in enumerate(report.chunks, start=1):
+        subchunks.append(
+            SourceChunk(
+                chunk_id=f"{chunk.chunk_id}.{index}",
+                title=chunk.title,
+                year=chunk.year,
+                question_estimate=subchunk.question_estimate,
+                char_count=subchunk.char_count,
+                content=subchunk.content,
+            )
+        )
+    return subchunks
+
+
+def _should_refine_chunk(
+    *,
+    chunk: SourceChunk,
+    output_qitems: int,
+    coverage_ratio: float,
+    min_coverage_ratio: float,
+    depth: int,
+    max_chunk_recursion: int,
+) -> bool:
+    if depth >= max_chunk_recursion:
+        return False
+    if chunk.question_estimate < 2:
+        return False
+    if output_qitems >= chunk.question_estimate:
+        return False
+    return coverage_ratio < min_coverage_ratio
+
+
+def _coverage_ratio(question_estimate: int, output_qitems: int) -> float:
+    if question_estimate <= 0:
+        return 1.0 if output_qitems > 0 else 0.0
+    return output_qitems / question_estimate
+
+
+def _count_qitems(text: str) -> int:
+    return len(re.findall(r"\\qitem", text))
 
 
 if __name__ == "__main__":
